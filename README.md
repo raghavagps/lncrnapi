@@ -41,7 +41,7 @@ pip install torch transformers catboost joblib tqdm numpy pandas
 This mode uses simple % composition features (very fast).
 
 ```bash
-python all_by_all_predictor.py   -lf ./data/example_lncRNA.fasta   -pf ./data/example_protein.fasta   -wd ./output   -model rapid
+python lncrnapi_cli.py   -lf ./data/example_lncRNA.fasta   -pf ./data/example_protein.fasta   -wd ./output   -model rapid
 ```
 
 **Model used:**  
@@ -54,7 +54,7 @@ python all_by_all_predictor.py   -lf ./data/example_lncRNA.fasta   -pf ./data/ex
 This mode uses transformer embeddings from **DNABERT2** (for lncRNA) and **ESM2-T30** (for protein).
 
 ```bash
-python all_by_all_predictor.py   -lf ./data/example_lncRNA.fasta   -pf ./data/example_protein.fasta   -wd ./output   -model llm
+python lncrnapi_cli.py  -lf ./data/example_lncRNA.fasta   -pf ./data/example_protein.fasta   -wd ./output   -model llm
 ```
 
 **Model used:**  
@@ -66,33 +66,11 @@ python all_by_all_predictor.py   -lf ./data/example_lncRNA.fasta   -pf ./data/ex
 
 | Argument | Description | Required |
 |-----------|--------------|-----------|
-| `--lncrna_fasta` | Path to the FASTA file containing lncRNA sequences. | ✅ |
-| `--protein_fasta` | Path to the FASTA file containing protein sequences. | ✅ |
-| `--model_path` | Path to the pre-trained CatBoost model file (`.cbm`, `.joblib`, or `.pkl`). | ✅ |
-| `--output_file` | Path to save the CSV file with predicted probabilities. | ✅ |
-
----
-
-## 🧠 How It Works
-
-1. **Model Loading**  
-   The tool loads the DNABERT-2 and ESM-2 models from Hugging Face.
-
-2. **FASTA Parsing**  
-   Extracts sequence IDs and corresponding sequences from input FASTA files.
-
-3. **Embedding Generation**  
-   Computes mean pooled embeddings for each sequence using transformer hidden states.
-
-4. **Prediction**  
-   Concatenates embeddings (lncRNA + protein) and predicts the interaction probability using the CatBoost model.
-
-5. **Output**  
-   Generates a `.csv` file containing:
-   - `LncRNA_ID`
-   - `Protein_ID`
-   - `Interaction_Probability`
-
+| `-lf` | Path to the FASTA file containing lncRNA sequences. | ✅ |
+| `-pf` | Path to the FASTA file containing protein sequences. | ✅ |
+| `-wd` | Path to the working directory. | ✅ |
+| `-model` | Choice of model to be used. | ✅ |
+| `-t` | Threshold | ❌ |
 ---
 
 ## 💾 Output
