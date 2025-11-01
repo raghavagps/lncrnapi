@@ -1,252 +1,178 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-LncRNA-Protein Interaction Prediction CLI
-
-This script takes an lncRNA FASTA file and a protein FASTA file, generates
-embeddings using pre-trained language models (DNABERT-2 and ESM-2), and
-predicts the interaction probability using a pre-trained CatBoost model.
-
-Usage:
-    python predict_interaction.py \
-        --lncrna_fasta /path/to/your/lncrnas.fasta \
-        --protein_fasta /path/to/your/proteins.fasta \
-        --model_path /path/to/your/saved_model.joblib \
-        --output_file /path/to/results.csv
+Unified LncRNA–Protein Interaction Prediction CLI
+- rapid: composition-based features
+- dnabert2: LLM-based embeddings (DNABERT2 + ESM2)
 """
+
 import os
 import argparse
-import pickle
 import joblib
-import torch
-import numpy as np
 import pandas as pd
+import numpy as np
+import torch
+from itertools import product
 from tqdm import tqdm
-from catboost import CatBoostClassifier
-
-# Suppress informational warnings from the transformers package
-import logging
-logging.getLogger("transformers").setLevel(logging.ERROR)
-
 from transformers import AutoTokenizer, AutoModel
-
-# --- MODEL CONFIGURATION ---
-LNCRNA_MODEL_NAME = "zhihan1996/DNABERT-2-117M"
-PROTEIN_MODEL_NAME = "facebook/esm2_t30_150M_UR50D"
+from pathlib import Path
 
 
-def parse_fasta(file_path):
-    """Parses a FASTA file and returns a dictionary of sequences."""
-    sequences = {}
-    current_id = None
-    with open(file_path, 'r') as f:
+# --- FASTA Parser ---
+def read_fasta(filepath):
+    with open(filepath) as f:
+        seqs, seq, header = [], [], None
         for line in f:
             line = line.strip()
-            if line.startswith('>'):
-                current_id = line[1:].split()[0] # Get ID, remove extra info
-                sequences[current_id] = ''
-            elif current_id:
-                sequences[current_id] += line
-    if not sequences:
-        raise ValueError(f"No sequences found in FASTA file: {file_path}")
-    return sequences
+            if not line:
+                continue
+            if line.startswith(">"):
+                if header and seq:
+                    seqs.append((header, "".join(seq).upper()))
+                    seq = []
+                header = line[1:].strip()
+            else:
+                seq.append(line)
+        if header and seq:
+            seqs.append((header, "".join(seq).upper()))
+    return seqs
 
+
+# --- Rapid (composition-based) ---
+def rapid_percentage_vectorized(sequences, alphabet, prefix):
+    seq_series = pd.Series(sequences)
+    seq_len = seq_series.str.len().replace(0, 1)
+    df = pd.concat(
+        [(seq_series.str.count(base) / seq_len * 100).rename(f"{prefix}_{base}") for base in alphabet],
+        axis=1
+    )
+    return df
+
+
+# --- LLM embedding utilities ---
 def get_device():
-    """Checks for available hardware and returns the appropriate torch device."""
     if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print("✅ Using GPU (CUDA) for acceleration.")
+        print("✅ Using GPU (CUDA)")
+        return torch.device("cuda")
     elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-        print("✅ Using Apple Silicon GPU (MPS) for acceleration.")
+        print("✅ Using Apple MPS GPU")
+        return torch.device("mps")
     else:
-        device = torch.device("cpu")
-        print("⚠️ GPU not found. Using CPU. This might be slow.")
-    return device
+        print("⚠️ Using CPU (may be slow)")
+        return torch.device("cpu")
+
 
 def generate_embedding(sequence, tokenizer, model, device):
-    """
-    Generates a single embedding for a given sequence using the provided
-    transformer model and tokenizer.
-    """
-    # Tokenize the sequence
     tokens = tokenizer(sequence, return_tensors='pt', truncation=True, max_length=1024)
     tokens = {k: v.to(device) for k, v in tokens.items()}
-
-    # Get model output (hidden states)
     with torch.no_grad():
         output = model(**tokens)
-
-    # Calculate the mean of the last hidden state to get a fixed-size embedding
-    # We ignore the special tokens [CLS] and [SEP] by selecting [1:-1]
     embedding = output.last_hidden_state.cpu().numpy()[0, 1:-1, :].mean(axis=0)
     return embedding
 
-def load_catboost_model(model_path):
-    """Loads a CatBoost model from a file, supporting multiple formats."""
-    print(f"\n[Step 4] Loading CatBoost model from: {model_path}")
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model file not found at {model_path}")
 
-    if model_path.endswith('.cbm'):
-        model = CatBoostClassifier()
-        model.load_model(model_path)
-    elif model_path.endswith('.joblib'):
-        # This is the logic that handles your joblib-saved model
-        print("  - Detected .joblib file, using joblib.load().")
-        model = joblib.load(model_path)
-    elif model_path.endswith('.pkl'):
-        print("  - Detected .pkl file, using pickle.load().")
-        with open(model_path, 'rb') as f:
-            model = pickle.load(f)
-    else:
-        raise ValueError("Unsupported model format. Use .cbm, .joblib, or .pkl")
-
-    print("✅ CatBoost model loaded successfully.")
-    return model
-
+# --- Main Function ---
 def main():
-    """Main function to run the CLI."""
     parser = argparse.ArgumentParser(
-        description="Predict lncRNA-Protein Interaction Probability.",
-        formatter_class=argparse.RawTextHelpFormatter
+        description="Predict lncRNA–protein interaction probability using CatBoost model (rapid or dnabert2, all-by-all)."
     )
-    parser.add_argument(
-        "--lncrna_fasta",
-        type=str,
-        required=True,
-        help="Path to the FASTA file containing lncRNA sequences."
-    )
-    parser.add_argument(
-        "--protein_fasta",
-        type=str,
-        required=True,
-        help="Path to the FASTA file containing protein sequences."
-    )
-    parser.add_argument(
-        "--model_path",
-        type=str,
-        required=True,
-        help="Path to the saved CatBoost model file (.cbm, .joblib, or .pkl)."
-    )
-    parser.add_argument(
-        "--output_file",
-        type=str,
-        required=True,
-        help="Path to the output CSV file where results will be saved."
-    )
+    parser.add_argument("-lf", required=True, help="Path to lncRNA FASTA file")
+    parser.add_argument("-pf", required=True, help="Path to protein FASTA file")
+    parser.add_argument("-wd", required=True, help="Working/output directory")
+    parser.add_argument("-model", required=True, choices=["rapid", "dnabert2"],
+                        help="Select which model to use: 'rapid' or 'dnabert2'")
+    parser.add_argument("-t", type=float, default=0.5, help="Threshold for classification (default=0.5)")
     args = parser.parse_args()
 
-    # --- Step 0: Setup ---
-    device = get_device()
+    wd = Path(args.wd)
+    wd.mkdir(parents=True, exist_ok=True)
+    output_path = wd / "output.csv"
 
-    # --- Step 1: Load Language Models and Tokenizers ---
-    print("\n[Step 1] Loading language models from Hugging Face...")
-    try:
-        # lncRNA Model (DNABERT-2)
-        lncrna_tokenizer = AutoTokenizer.from_pretrained(LNCRNA_MODEL_NAME)
-        # Add trust_remote_code=True to automatically accept custom model code
-        lncrna_model = AutoModel.from_pretrained(LNCRNA_MODEL_NAME).to(device)
-        lncrna_model.eval() # Set model to evaluation mode
-        print(f"  - Loaded {LNCRNA_MODEL_NAME}")
+    # --- Load FASTA files ---
+    lncrnas = read_fasta(args.lf)
+    proteins = read_fasta(args.pf)
+    print(f"Loaded {len(lncrnas)} lncRNAs and {len(proteins)} proteins.\n")
 
-        # Protein Model (ESM-2)
-        protein_tokenizer = AutoTokenizer.from_pretrained(PROTEIN_MODEL_NAME)
-        protein_model = AutoModel.from_pretrained(PROTEIN_MODEL_NAME).to(device)
-        protein_model.eval() # Set model to evaluation mode
-        print(f"  - Loaded {PROTEIN_MODEL_NAME}")
-    except Exception as e:
-        error_msg = str(e)
-        # Catch the specific security-related error and provide a helpful message
-        if "safetensors" in error_msg or "torch.load" in error_msg:
-            print(f"❌ Error loading models due to a security restriction: {e}")
-            print("\n💡 This is often solved by installing the 'safetensors' library, which allows for secure model loading.")
-            print("   Please run the following command in your activated conda/virtual environment:")
-            print("   pip install safetensors")
-        else:
-            print(f"❌ Error loading models: {e}")
-            print("   Please ensure you have an active internet connection and the model names are correct.")
-        return
+    lnc_ids = [i for i, _ in lncrnas]
+    prot_ids = [i for i, _ in proteins]
+    lnc_seqs = [s.replace("U", "T") for _, s in lncrnas]
+    prot_seqs = [s for _, s in proteins]
 
-    # --- Step 2: Parse Input FASTA Files ---
-    print("\n[Step 2] Parsing FASTA files...")
-    try:
-        lncrna_seqs = parse_fasta(args.lncrna_fasta)
-        protein_seqs = parse_fasta(args.protein_fasta)
-        print(f"  - Found {len(lncrna_seqs)} lncRNA sequence(s).")
-        print(f"  - Found {len(protein_seqs)} protein sequence(s).")
-    except (FileNotFoundError, ValueError) as e:
-        print(f"❌ Error parsing FASTA files: {e}")
-        return
+    model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+    model_path = os.path.join(
+        model_dir,
+        "catboost_model_rapid.joblib" if args.model == "rapid" else "catboost_dnabert2_esm-t30.joblib"
+    )
 
-    # --- Step 3: Generate Embeddings ---
-    print("\n[Step 3] Generating embeddings for all sequences...")
-    lncrna_embeddings = {
-        seq_id: generate_embedding(seq, lncrna_tokenizer, lncrna_model, device)
-        for seq_id, seq in tqdm(lncrna_seqs.items(), desc="LncRNA Embeddings")
-    }
-    protein_embeddings = {
-        seq_id: generate_embedding(seq, protein_tokenizer, protein_model, device)
-        for seq_id, seq in tqdm(protein_seqs.items(), desc="Protein Embeddings")
-    }
-    print("✅ Embeddings generated.")
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model file not found: {model_path}")
 
-    # --- Step 4: Load Classifier and Predict ---
-    try:
-        classifier = load_catboost_model(args.model_path)
-    except (FileNotFoundError, ValueError) as e:
-        print(f"❌ Error: {e}")
-        return
+    print(f"Using model: {args.model.upper()} → {model_path}\n")
 
-    print("\n[Step 5] Predicting interaction probabilities for all pairs...")
-    results = []
-    total_pairs = len(lncrna_seqs) * len(protein_seqs)
-    print(f"  - Creating and evaluating {total_pairs} pair(s).")
+    # --- Feature Generation ---
+    if args.model == "rapid":
+        print("[Step 1] Generating composition-based features...")
+        lnc_df = rapid_percentage_vectorized(lnc_seqs, list("ATGC"), prefix="CDK")
+        prot_df = rapid_percentage_vectorized(prot_seqs, list("GQYNRLCWTV"), prefix="AAC")
 
-    all_pairs = [
-        (lnc_id, lnc_emb, prot_id, prot_emb)
-        for lnc_id, lnc_emb in lncrna_embeddings.items()
-        for prot_id, prot_emb in protein_embeddings.items()
-    ]
+        pairs = list(product(range(len(lncrnas)), range(len(proteins))))
+        print(f"Generating {len(pairs)} lncRNA–protein pairs...")
 
-    for lnc_id, lnc_emb, prot_id, prot_emb in tqdm(all_pairs, desc="Predicting Pairs"):
-        # Concatenate embeddings to create the feature vector
-        feature_vector = np.concatenate([lnc_emb, prot_emb]).reshape(1, -1)
+        lnc_idx = [i for i, _ in pairs]
+        prot_idx = [j for _, j in pairs]
+        X = pd.concat(
+            [lnc_df.iloc[lnc_idx].reset_index(drop=True),
+             prot_df.iloc[prot_idx].reset_index(drop=True)],
+            axis=1
+        )
 
-        # Predict probability [prob_class_0, prob_class_1]
-        probability = classifier.predict_proba(feature_vector)[0][1]
+    elif args.model == "dnabert2":
+        print("[Step 1] Loading DNABERT2 and ESM2 models from Hugging Face...")
+        device = get_device()
+        lncrna_tokenizer = AutoTokenizer.from_pretrained("zhihan1996/DNABERT-2-117M")
+        lncrna_model = AutoModel.from_pretrained("zhihan1996/DNABERT-2-117M").to(device).eval()
 
-        results.append({
-            "LncRNA_ID": lnc_id,
-            "Protein_ID": prot_id,
-            "Interaction_Probability": probability
-        })
+        protein_tokenizer = AutoTokenizer.from_pretrained("facebook/esm2_t30_150M_UR50D")
+        protein_model = AutoModel.from_pretrained("facebook/esm2_t30_150M_UR50D").to(device).eval()
 
-    # --- Step 6: Save and Display Results ---
-    results_df = pd.DataFrame(results)
-    # Format probability for better readability
-    results_df['Interaction_Probability'] = results_df['Interaction_Probability'].map('{:.4f}'.format)
-    
-    print(f"\n[Step 6] Saving results to {args.output_file}...")
-    try:
-        # Ensure the output directory exists
-        output_dir = os.path.dirname(args.output_file)
-        if output_dir: # Check if the path includes a directory
-            os.makedirs(output_dir, exist_ok=True)
-        
-        results_df.to_csv(args.output_file, index=False)
-        print(f"✅ Results successfully saved.")
+        print("[Step 2] Generating embeddings (this may take a while)...")
+        lnc_embs = {
+            l_id: generate_embedding(seq, lncrna_tokenizer, lncrna_model, device)
+            for l_id, seq in tqdm(zip(lnc_ids, lnc_seqs), total=len(lnc_ids), desc="LncRNA embeddings")
+        }
+        prot_embs = {
+            p_id: generate_embedding(seq, protein_tokenizer, protein_model, device)
+            for p_id, seq in tqdm(zip(prot_ids, prot_seqs), total=len(prot_ids), desc="Protein embeddings")
+        }
 
-    except Exception as e:
-        print(f"❌ Error saving results to file: {e}")
+        pairs = list(product(lnc_ids, prot_ids))
+        X = [
+            np.concatenate([lnc_embs[l_id], prot_embs[p_id]])
+            for l_id, p_id in tqdm(pairs, desc="Building feature vectors")
+        ]
+        X = np.stack(X)
 
-    # Also print the results to the console for immediate feedback
-    print("\n--- Prediction Results ---")
-    print(results_df.to_string(index=False))
-    print("--------------------------\n")
+    # --- Load Model ---
+    print("\n[Step 3] Loading CatBoost model...")
+    model = joblib.load(model_path)
+
+    # --- Predict ---
+    print("[Step 4] Predicting interaction probabilities...")
+    probs = model.predict_proba(X)[:, 1]
+    preds = (probs >= args.t).astype(int)
+
+    # --- Save Output ---
+    results = pd.DataFrame({
+        "lncRNA_ID": [lnc_ids[i] if isinstance(i, int) else i for i, _ in pairs],
+        "Protein_ID": [prot_ids[j] if isinstance(j, int) else j for _, j in pairs],
+        "Interaction_Probability": probs,
+        "Predicted_Label": preds
+    })
+    results.to_csv(output_path, index=False)
+
+    print(f"\n✅ Predictions saved to {output_path}")
+    print(results.head())
+
 
 if __name__ == "__main__":
     main()
-
-
