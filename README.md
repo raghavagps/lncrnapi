@@ -30,7 +30,7 @@ The script performs **all-by-all predictions** between every lncRNA and every pr
 Install the following dependencies before running the script:
 
 ```bash
-pip install torch transformers catboost joblib tqdm numpy pandas
+pip install torch==2.6.0 transformers==4.57.0 catboost==1.2.8 joblib tqdm numpy pandas
 ```
 ---
 
