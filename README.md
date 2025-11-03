@@ -98,17 +98,6 @@ The script automatically detects and uses available hardware:
 
 ---
 
-## 🛠 Troubleshooting
-
-| Issue | Possible Cause | Solution |
-|-------|----------------|-----------|
-| `Model file not found` | Wrong `--model_path` | Check the file path |
-| `No sequences found in FASTA` | Invalid FASTA format | Ensure `>` headers are present |
-| `safetensors` error | Missing library | Install with `pip install safetensors` |
-| Slow performance | CPU usage | Use GPU-enabled environment |
-
----
-
 ## 📜 Citation
 
 If you use this tool in your research, please cite:
