@@ -9,6 +9,9 @@ It supports two modes:
 The script performs **all-by-all predictions** between every lncRNA and every protein sequence in the provided FASTA files.
 
 ---
+## dataset folder 
+Contain all the dataset
+
 
 ## 📦 Features
 
