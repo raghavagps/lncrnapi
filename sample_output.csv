@@ -1,0 +1,3 @@
+LncRNA_ID,Protein_ID,Interaction_Probability,Predicted_Label
+LNC_001,PROT_A,0.0021,Non-interacting
+LNC_001,PROT_B,0.0014,Non-interacting
